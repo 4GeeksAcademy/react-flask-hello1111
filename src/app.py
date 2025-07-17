@@ -2,71 +2,77 @@
 This module takes care of starting the API Server, Loading the DB and Adding the endpoints
 """
 import os
+from datetime import timedelta
 from flask import Flask, request, jsonify, url_for, send_from_directory
 from flask_migrate import Migrate
 from flask_swagger import swagger
+from flask_jwt_extended import JWTManager
 from api.utils import APIException, generate_sitemap
 from api.models import db
 from api.routes import api
 from api.admin import setup_admin
 from api.commands import setup_commands
 
-# from models import Person
-
+# Entorno y carpeta de ficheros estáticos
 ENV = "development" if os.getenv("FLASK_DEBUG") == "1" else "production"
-static_file_dir = os.path.join(os.path.dirname(
-    os.path.realpath(__file__)), '../dist/')
-app = Flask(__name__)
+static_file_dir = os.path.join(
+    os.path.dirname(os.path.realpath(__file__)),
+    '../dist/'
+)
+
+app = Flask(__name__, static_folder=None)
 app.url_map.strict_slashes = False
 
-# database condiguration
+# Database configuration
 db_url = os.getenv("DATABASE_URL")
-if db_url is not None:
+if db_url:
+    # Heroku-style postgres URL fix
     app.config['SQLALCHEMY_DATABASE_URI'] = db_url.replace(
-        "postgres://", "postgresql://")
+        "postgres://", "postgresql://"
+    )
 else:
     app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:////tmp/test.db"
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-MIGRATE = Migrate(app, db, compare_type=True)
+
+# JWT configuration
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'super-secret-jwt')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
+
+# Inicializar extensiones
 db.init_app(app)
+MIGRATE = Migrate(app, db, compare_type=True)
+jwt = JWTManager(app)
 
-# add the admin
+# Admin y comandos personalizados
 setup_admin(app)
-
-# add the admin
 setup_commands(app)
 
-# Add all endpoints form the API with a "api" prefix
+# Registrar blueprint de la API
 app.register_blueprint(api, url_prefix='/api')
 
-# Handle/serialize errors like a JSON object
-
-
+# Manejo de excepciones de la API
 @app.errorhandler(APIException)
 def handle_invalid_usage(error):
     return jsonify(error.to_dict()), error.status_code
 
-# generate sitemap with all your endpoints
-
-
+# Sitemap o servir index.html en producción
 @app.route('/')
 def sitemap():
     if ENV == "development":
         return generate_sitemap(app)
     return send_from_directory(static_file_dir, 'index.html')
 
-# any other endpoint will try to serve it like a static file
+# Servir cualquier otro archivo estático o index.html
 @app.route('/<path:path>', methods=['GET'])
 def serve_any_other_file(path):
     if not os.path.isfile(os.path.join(static_file_dir, path)):
         path = 'index.html'
     response = send_from_directory(static_file_dir, path)
-    response.cache_control.max_age = 0  # avoid cache memory
+    response.cache_control.max_age = 0  # evitar caché
     return response
 
-
-# this only runs if `$ python src/main.py` is executed
+# Punto de entrada
 if __name__ == '__main__':
     PORT = int(os.environ.get('PORT', 3001))
     app.run(host='0.0.0.0', port=PORT, debug=True)
